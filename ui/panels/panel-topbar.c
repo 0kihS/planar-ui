@@ -91,8 +91,41 @@ void panel_topbar_refresh(GtkWidget *widget) {
     gboolean chat_vis = p->app->chat_panel && gtk_widget_get_visible(p->app->chat_panel);
     gboolean log_vis = p->app->log_panel && gtk_widget_get_visible(p->app->log_panel);
 
+    /* Model name (strip provider/ prefix) */
+    const char *model_display = "";
+    if (p->app && p->app->agent_model && p->app->agent_model[0]) {
+        const char *slash = strrchr(p->app->agent_model, '/');
+        model_display = slash ? slash + 1 : p->app->agent_model;
+    }
+
+    /* Context utilization */
+    int ctx_pct = 0;
+    if (p->app && p->app->context_length > 0) {
+        gint64 used = p->app->tokens_prompt + p->app->tokens_completion;
+        ctx_pct = (int)(100 * used / p->app->context_length);
+        if (ctx_pct > 100) ctx_pct = 100;
+    }
+
+    /* Build context bar string: 6 chars wide */
+    char ctx_bar[32];
+    int filled = (ctx_pct * 6 + 50) / 100;
+    if (filled > 6) filled = 6;
+    int i_bar;
+    int pos = 0;
+    for (i_bar = 0; i_bar < filled; i_bar++) {
+        ctx_bar[pos++] = '#'; ctx_bar[pos++] = '#'; ctx_bar[pos++] = '#';
+        ctx_bar[pos++] = '#';
+    }
+    for (i_bar = filled; i_bar < 6; i_bar++) {
+        ctx_bar[pos++] = '.';
+    }
+    ctx_bar[pos] = '\0';
+
     char *html = g_strdup_printf(
-        "<html><head><style>%s body{background:transparent;}</style></head><body>"
+        "<html><head><style>%s body{background:transparent;}"
+        ".ctx-bar{font-family:var(--mono);font-size:8px;color:var(--teal);letter-spacing:0.05em;}"
+        ".model-tag{font-family:var(--display);font-size:7px;color:var(--amber);letter-spacing:0.08em;}"
+        "</style></head><body>"
         "<div class='topbar'>"
         "  <div class='topbar-caution'></div>"
         "  <span class='topbar-title'>PLANAR</span>"
@@ -105,6 +138,9 @@ void panel_topbar_refresh(GtkWidget *widget) {
         "  <span class='topbar-sub'>WS <span class='val'>%d</span></span>"
         "  <div class='topbar-sep'></div>"
         "  <span class='topbar-sub'><span class='val'>%s</span></span>"
+        "  <div class='topbar-sep'></div>"
+        "  <span class='model-tag'>%s</span>"
+        "  <span class='ctx-bar'>[%s] %d%%</span>"
         "  <div style='flex:1;'></div>"
         "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_windows'\">WIN</button>"
         "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_chat'\">CHAT</button>"
@@ -120,6 +156,8 @@ void panel_topbar_refresh(GtkWidget *widget) {
         sys_status,
         active_ws,
         time_str,
+        model_display,
+        ctx_bar, ctx_pct,
         win_vis ? "active" : "inactive",
         chat_vis ? "active" : "inactive",
         log_vis ? "active" : "inactive",

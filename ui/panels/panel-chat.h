@@ -22,5 +22,6 @@ GType panel_chat_get_type(void);
 GtkWidget *panel_chat_new(PlanarApp *app);
 void panel_chat_add_message(GtkWidget *widget, const char *role, const char *content);
 void panel_chat_load_html(GtkWidget *widget, const char *html);
+void panel_chat_show_clarify(GtkWidget *widget, const char *question, const char *choices_json);
 
 #endif

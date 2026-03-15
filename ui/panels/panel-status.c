@@ -126,9 +126,43 @@ void panel_status_refresh(GtkWidget *widget) {
     guint   tools = p->app ? p->app->tool_count : 0;
     guint   msgs = p->app ? p->app->msg_count : 0;
 
-    /* Battery color */
     const char *bat_bar_class = battery > 30 ? "green" : (battery > 10 ? "amber" : "red");
     const char *bat_icon = charging ? "&#x26A1;" : "";
+
+    /* Pre-format system strings to avoid memory leaks */
+    char cpu_str[16], mem_str[64], bat_str[16];
+    if (cpu_pct >= 0) snprintf(cpu_str, sizeof(cpu_str), "%d%%%%", cpu_pct);
+    else snprintf(cpu_str, sizeof(cpu_str), "--");
+    if (mem_pct >= 0) snprintf(mem_str, sizeof(mem_str), "%d%%%% (%dM/%dM)", mem_pct, mem_used_mb, mem_total_mb);
+    else snprintf(mem_str, sizeof(mem_str), "--");
+    if (battery >= 0) snprintf(bat_str, sizeof(bat_str), "%d%%%%", battery);
+    else snprintf(bat_str, sizeof(bat_str), "N/A");
+
+    /* Agent session info */
+    const char *model_display = "--";
+    if (p->app && p->app->agent_model && p->app->agent_model[0]) {
+        const char *slash = strrchr(p->app->agent_model, '/');
+        model_display = slash ? slash + 1 : p->app->agent_model;
+    }
+    const char *provider_display = (p->app && p->app->agent_provider && p->app->agent_provider[0])
+        ? p->app->agent_provider : "--";
+    const char *session_display = (p->app && p->app->session_id && p->app->session_id[0])
+        ? p->app->session_id : "--";
+
+    /* Token info */
+    gint64 tok_prompt = p->app ? p->app->tokens_prompt : 0;
+    gint64 tok_completion = p->app ? p->app->tokens_completion : 0;
+    gint64 tok_total = tok_prompt + tok_completion;
+    gint   api_calls = p->app ? p->app->api_calls : 0;
+    gint   compressions = p->app ? p->app->compression_count : 0;
+
+    /* Context utilization */
+    int ctx_pct = 0;
+    if (p->app && p->app->context_length > 0) {
+        ctx_pct = (int)(100 * tok_total / p->app->context_length);
+        if (ctx_pct > 100) ctx_pct = 100;
+    }
+    const char *ctx_color = ctx_pct > 80 ? "red" : (ctx_pct > 50 ? "amber" : "teal");
 
     char *html = g_strdup_printf(
         "<html><head><style>%s %s</style></head><body>"
@@ -166,7 +200,56 @@ void panel_status_refresh(GtkWidget *widget) {
         "    </div>"
         "  </div>"
 
-        /* Agent & Connection */
+        /* Agent Session */
+        "  <div class='diag-section' style='border-top:1px solid rgba(0,229,255,0.06);'>"
+        "    <div class='diag-header'>AGENT SESSION</div>"
+        "    <div class='stat-row'>"
+        "      <span class='stat-label'>MODEL</span>"
+        "      <span class='stat-val'>%s</span>"
+        "    </div>"
+        "    <div class='stat-row'>"
+        "      <span class='stat-label'>PROVIDER</span>"
+        "      <span class='stat-val'>%s</span>"
+        "    </div>"
+        "    <div class='stat-row'>"
+        "      <span class='stat-label'>SESSION</span>"
+        "      <span class='stat-val'>%.15s</span>"
+        "    </div>"
+        "  </div>"
+
+        /* Token Usage */
+        "  <div class='diag-section' style='border-top:1px solid rgba(0,229,255,0.06);'>"
+        "    <div class='diag-header'>TOKEN USAGE</div>"
+        "    <div class='token-row'>"
+        "      <span class='token-dir'>IN</span>"
+        "      <span class='token-val'>%ld</span>"
+        "    </div>"
+        "    <div class='token-row'>"
+        "      <span class='token-dir'>OUT</span>"
+        "      <span class='token-val'>%ld</span>"
+        "    </div>"
+        "    <div class='token-row'>"
+        "      <span class='token-dir'>SUM</span>"
+        "      <span class='token-val'>%ld</span>"
+        "    </div>"
+        "    <div class='stat-row' style='margin-top:4px;'>"
+        "      <span class='stat-label'>CONTEXT</span>"
+        "      <span class='stat-val'>%d%%%%</span>"
+        "    </div>"
+        "    <div class='sys-bar'>"
+        "      <div class='bar-track'><div class='bar-fill %s' style='width:%d%%;'></div></div>"
+        "    </div>"
+        "    <div class='stat-row' style='margin-top:4px;'>"
+        "      <span class='stat-label'>API CALLS</span>"
+        "      <span class='stat-val'>%d</span>"
+        "    </div>"
+        "    <div class='stat-row'>"
+        "      <span class='stat-label'>COMPRESSIONS</span>"
+        "      <span class='stat-val'>%d</span>"
+        "    </div>"
+        "  </div>"
+
+        /* Activity & Connection */
         "  <div class='diag-section' style='border-top:1px solid rgba(0,229,255,0.06);'>"
         "    <div class='stat-row'>"
         "      <span class='stat-label'>MESSAGES</span>"
@@ -190,21 +273,34 @@ void panel_status_refresh(GtkWidget *widget) {
         PANEL_CSS, STATUS_EXTRA_CSS,
 
         /* CPU */
-        cpu_pct >= 0 ? g_strdup_printf("%d%%", cpu_pct) : g_strdup("--"),
+        cpu_str,
         cpu_pct >= 0 ? cpu_pct : 0,
 
         /* RAM */
-        mem_pct >= 0 ? g_strdup_printf("%d%% (%dM/%dM)", mem_pct, mem_used_mb, mem_total_mb)
-                     : g_strdup("--"),
+        mem_str,
         mem_pct >= 0 ? mem_pct : 0,
 
         /* Battery */
         bat_icon,
-        battery >= 0 ? g_strdup_printf("%d%%", battery) : g_strdup("N/A"),
+        bat_str,
         bat_bar_class,
         battery >= 0 ? battery : 0,
 
-        /* Agent stats */
+        /* Agent Session */
+        model_display,
+        provider_display,
+        session_display,
+
+        /* Tokens */
+        (long)tok_prompt,
+        (long)tok_completion,
+        (long)tok_total,
+        ctx_pct,
+        ctx_color, ctx_pct,
+        api_calls,
+        compressions,
+
+        /* Activity */
         msgs, tools,
 
         /* Connection */
@@ -234,7 +330,7 @@ GtkWidget *panel_status_new(PlanarApp *app) {
     p->webview = webkit_web_view_new();
 
     app_panel_set_content(&p->panel, p->webview);
-    gtk_window_set_default_size(GTK_WINDOW(p), 260, 250);
+    gtk_window_set_default_size(GTK_WINDOW(p), 260, 480);
     app_panel_show(&p->panel);
 
     /* Prime the CPU delta with a first reading */

@@ -24,7 +24,27 @@ static const char *CHAT_EXTRA_CSS =
     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; }"
     ".spinner { display: inline-block; width: 5px; height: 5px; "
     "border-radius: 50%; background: var(--teal); margin-right: 6px; "
-    "box-shadow: 0 0 6px var(--teal); animation: pulse 1s ease-in-out infinite; }";
+    "box-shadow: 0 0 6px var(--teal); animation: pulse 1s ease-in-out infinite; }"
+
+    /* Clarify card */
+    ".clarify-card { background: rgba(255,179,0,0.08); border: 1px solid rgba(255,179,0,0.3); "
+    "border-radius: 4px; padding: 12px; margin: 8px 0; animation: fadeUp 0.3s ease; }"
+    ".clarify-question { font-family: var(--display); font-size: 10px; color: var(--amber); "
+    "letter-spacing: 0.08em; margin-bottom: 10px; }"
+    ".clarify-choices { display: flex; flex-direction: column; gap: 6px; }"
+    ".clarify-btn { display: block; background: rgba(0,229,255,0.06); "
+    "border: 1px solid var(--teal-dim); color: var(--teal); font-family: var(--mono); "
+    "font-size: 11px; padding: 8px 12px; cursor: pointer; text-align: left; text-decoration: none; "
+    "border-radius: 2px; transition: all 0.2s ease; }"
+    ".clarify-btn:hover { background: rgba(0,229,255,0.12); border-color: var(--teal); "
+    "box-shadow: 0 0 8px rgba(0,229,255,0.3); }"
+
+    /* Reasoning bubble */
+    ".msg-bubble.reasoning { border-left-color: #556; background: rgba(85,85,102,0.05); "
+    "color: #667; font-size: 10px; font-style: italic; cursor: pointer; "
+    "max-height: 60px; overflow: hidden; transition: max-height 0.3s ease; }"
+    ".msg-bubble.reasoning.expanded { max-height: 2000px; }"
+    ;
 
 /* Escape text for safe embedding inside a JS single-quoted string that
    will be assigned to innerHTML.  Steps:
@@ -47,6 +67,68 @@ static char *escape_for_js_html(const char *text) {
     return g_string_free(out, FALSE);
 }
 
+/* Escape for JS single-quoted string only (no HTML escaping).
+   Used when the JS side handles its own HTML escaping. */
+static char *escape_for_js(const char *text) {
+    GString *out = g_string_sized_new(strlen(text) + 32);
+    for (const char *p = text; *p; p++) {
+        switch (*p) {
+            case '\\': g_string_append(out, "\\\\"); break;
+            case '\'': g_string_append(out, "\\'"); break;
+            case '\n': g_string_append(out, "\\n"); break;
+            case '\r': break;
+            default:   g_string_append_c(out, *p); break;
+        }
+    }
+    return g_string_free(out, FALSE);
+}
+
+static void on_clarify_script_message(WebKitUserContentManager *manager,
+    JSCValue *value, gpointer data)
+{
+    (void)manager;
+    PanelChat *p = (PanelChat *)data;
+    char *answer = jsc_value_to_string(value);
+    if (answer && p->app) {
+        planar_app_send_clarify_response(p->app, answer);
+    }
+    g_free(answer);
+}
+
+/* JS helpers injected into the chat page */
+static const char *CHAT_JS =
+    "<script>"
+    "function showClarify(question, choices) {"
+    "  var c = document.getElementById('chat-content');"
+    "  if (!c) return;"
+    "  var safe = function(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };"
+    "  var card = document.createElement('div');"
+    "  card.className = 'clarify-card';"
+    "  card.innerHTML = '<div class=\"clarify-question\">' + safe(question) + '</div><div class=\"clarify-choices\"></div>';"
+    "  var box = card.querySelector('.clarify-choices');"
+    "  for (var i = 0; i < choices.length; i++) {"
+    "    var btn = document.createElement('button');"
+    "    btn.className = 'clarify-btn';"
+    "    btn.textContent = choices[i];"
+    "    btn.dataset.answer = choices[i];"
+    "    btn.addEventListener('click', function() {"
+    "      var answer = this.dataset.answer;"
+    "      var btns = card.querySelectorAll('.clarify-btn');"
+    "      for (var j = 0; j < btns.length; j++) btns[j].disabled = true;"
+    "      this.style.borderColor = 'var(--amber)';"
+    "      this.style.color = 'var(--amber)';"
+    "      window.webkit.messageHandlers.clarifyResponse.postMessage(answer);"
+    "    });"
+    "    box.appendChild(btn);"
+    "  }"
+    "  c.appendChild(card);"
+    "  window.scrollTo(0, document.body.scrollHeight);"
+    "}"
+    "function toggleReasoning(el) {"
+    "  el.classList.toggle('expanded');"
+    "}"
+    "</script>";
+
 void panel_chat_load_html(GtkWidget *widget, const char *html) {
     PanelChat *p = APP_PANEL_CHAT(widget);
     if (!p->webview) return;
@@ -59,8 +141,10 @@ void panel_chat_load_html(GtkWidget *widget, const char *html) {
         "  <div class='caution-bar'></div>"
         "  <div class='content' id='chat-content' style='flex:1;'>%s</div>"
         "  <div id='progress-zone'></div>"
-        "</div></body></html>",
-        PANEL_CSS, CHAT_EXTRA_CSS, html);
+        "</div>"
+        "%s"
+        "</body></html>",
+        PANEL_CSS, CHAT_EXTRA_CSS, html, CHAT_JS);
 
     webkit_web_view_load_html(WEBKIT_WEB_VIEW(p->webview), full_html, NULL);
     g_free(full_html);
@@ -105,6 +189,30 @@ void panel_chat_add_message(GtkWidget *widget, const char *role, const char *con
         return;
     }
 
+    /* Reasoning messages: collapsible thinking block */
+    if (strcmp(role, "reasoning") == 0) {
+        time_t now = time(NULL);
+        struct tm *tm = localtime(&now);
+        char ts[16];
+        strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+
+        char *escaped = escape_for_js_html(content);
+        char *script = g_strdup_printf(
+            "var pz = document.getElementById('progress-zone'); if(pz) pz.innerHTML = '';"
+            "var c = document.getElementById('chat-content');"
+            "if(c) {"
+            "  c.innerHTML += '<div class=\"msg\"><div class=\"msg-meta\">%s &nbsp; REASONING</div>"
+            "<div class=\"msg-bubble reasoning\" onclick=\"toggleReasoning(this)\">%s</div></div>';"
+            "  window.scrollTo(0, document.body.scrollHeight);"
+            "}",
+            ts, escaped);
+
+        webkit_web_view_evaluate_javascript(wv, script, -1, NULL, NULL, NULL, NULL, NULL);
+        g_free(script);
+        g_free(escaped);
+        return;
+    }
+
     /* For non-tool messages, clear the progress zone first */
     webkit_web_view_evaluate_javascript(wv,
         "var pz = document.getElementById('progress-zone'); if(pz) pz.innerHTML = '';",
@@ -132,6 +240,25 @@ void panel_chat_add_message(GtkWidget *widget, const char *role, const char *con
     g_free(upper_role);
 }
 
+void panel_chat_show_clarify(GtkWidget *widget, const char *question, const char *choices_json) {
+    PanelChat *p = APP_PANEL_CHAT(widget);
+    if (!p->webview) return;
+
+    char *esc_q = escape_for_js(question ? question : "Agent is asking...");
+
+    /* choices_json is a valid JSON array from json_generator_to_data — pass directly as JS literal */
+    char *script = g_strdup_printf(
+        "showClarify('%s', %s);",
+        esc_q,
+        choices_json ? choices_json : "[]");
+
+    webkit_web_view_evaluate_javascript(WEBKIT_WEB_VIEW(p->webview),
+        script, -1, NULL, NULL, NULL, NULL, NULL);
+
+    g_free(script);
+    g_free(esc_q);
+}
+
 GtkWidget *panel_chat_new(PlanarApp *app) {
     PanelChat *p = g_object_new(APP_TYPE_PANEL_CHAT, NULL);
     p->app = app;
@@ -142,6 +269,11 @@ GtkWidget *panel_chat_new(PlanarApp *app) {
         28, 70, 270, 275, -1);
 
     p->webview = webkit_web_view_new();
+    WebKitUserContentManager *ucm = webkit_web_view_get_user_content_manager(
+        WEBKIT_WEB_VIEW(p->webview));
+    g_signal_connect(ucm, "script-message-received::clarifyResponse",
+        G_CALLBACK(on_clarify_script_message), p);
+    webkit_user_content_manager_register_script_message_handler(ucm, "clarifyResponse", NULL);
 
     app_panel_set_content(&p->panel, p->webview);
     gtk_window_set_default_size(GTK_WINDOW(p), 600, 400);

@@ -13,6 +13,7 @@ struct agent_ipc {
     SoupSession *session;
     SoupWebsocketConnection *ws;
     agent_message_cb callback;
+    agent_structured_cb structured_callback;
     gpointer user_data;
     char *url;
     guint reconnect_source;
@@ -51,6 +52,19 @@ static void on_ws_message(SoupWebsocketConnection *ws, SoupWebsocketDataType typ
         return;
     }
 
+    /* Structured message types — dispatch to structured callback */
+    if (strcmp(msg_type, "status") == 0 ||
+        strcmp(msg_type, "todo") == 0 ||
+        strcmp(msg_type, "clarify") == 0 ||
+        strcmp(msg_type, "reasoning") == 0) {
+        if (ipc->structured_callback) {
+            ipc->structured_callback(msg_type, obj, ipc->user_data);
+        }
+        g_object_unref(parser);
+        return;
+    }
+
+    /* Text-based message types — dispatch to message callback */
     const char *role = NULL;
     const char *content = NULL;
 
@@ -73,6 +87,11 @@ static void on_ws_message(SoupWebsocketConnection *ws, SoupWebsocketDataType typ
             snprintf(progress_buf, sizeof(progress_buf), "working...");
         }
         content = progress_buf;
+
+        /* Also forward structured progress data if available */
+        if (ipc->structured_callback) {
+            ipc->structured_callback(msg_type, obj, ipc->user_data);
+        }
     } else if (strcmp(msg_type, "system") == 0) {
         role = "system";
         content = json_object_get_string_member(obj, "text");
@@ -144,6 +163,9 @@ static void on_websocket_connect(GObject *source, GAsyncResult *result, gpointer
     if (ipc->callback) {
         ipc->callback("system", "Connected to Hermes gateway", ipc->user_data);
     }
+
+    /* Request initial status from gateway */
+    agent_ipc_send_json(ipc, "query", "what", "status");
 }
 
 static void agent_ipc_attempt_connect(agent_ipc_t *ipc) {
@@ -190,8 +212,12 @@ void agent_ipc_free(agent_ipc_t *ipc) {
     g_free(ipc);
 }
 
-gboolean agent_ipc_connect(agent_ipc_t *ipc, agent_message_cb callback, gpointer user_data) {
+gboolean agent_ipc_connect(agent_ipc_t *ipc,
+                           agent_message_cb callback,
+                           agent_structured_cb structured_callback,
+                           gpointer user_data) {
     ipc->callback = callback;
+    ipc->structured_callback = structured_callback;
     ipc->user_data = user_data;
     agent_ipc_attempt_connect(ipc);
     return TRUE;
@@ -214,6 +240,37 @@ void agent_ipc_send(agent_ipc_t *ipc, const char *message) {
         json_builder_add_string_value(builder, "message");
         json_builder_set_member_name(builder, "text");
         json_builder_add_string_value(builder, message);
+    }
+
+    json_builder_end_object(builder);
+
+    JsonGenerator *gen = json_generator_new();
+    JsonNode *root = json_builder_get_root(builder);
+    json_generator_set_root(gen, root);
+
+    gchar *json_str = json_generator_to_data(gen, NULL);
+
+    soup_websocket_connection_send_text(ipc->ws, json_str);
+
+    g_free(json_str);
+    json_node_unref(root);
+    g_object_unref(gen);
+    g_object_unref(builder);
+}
+
+void agent_ipc_send_json(agent_ipc_t *ipc, const char *type, const char *key, const char *value) {
+    if (!ipc || !ipc->ws) return;
+    if (soup_websocket_connection_get_state(ipc->ws) != SOUP_WEBSOCKET_STATE_OPEN) return;
+
+    JsonBuilder *builder = json_builder_new();
+    json_builder_begin_object(builder);
+
+    json_builder_set_member_name(builder, "type");
+    json_builder_add_string_value(builder, type);
+
+    if (key && value) {
+        json_builder_set_member_name(builder, key);
+        json_builder_add_string_value(builder, value);
     }
 
     json_builder_end_object(builder);

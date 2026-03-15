@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
 # Install Planar platform adapter + skill into an existing Hermes Agent setup.
+# Also patches toolsets.py and gateway/run.py for clarify/reasoning support.
 #
 # Usage:
 #   ./install.sh                      # auto-detect ~/.hermes
@@ -53,6 +54,14 @@ mkdir -p "$SKILLS_DIR"
 echo "Installing skill..."
 cp "$SCRIPT_DIR/skills/planar/SKILL.md" "$SKILLS_DIR/SKILL.md"
 echo "  -> $SKILLS_DIR/SKILL.md"
+
+# Apply patches (idempotent — safe to re-run)
+echo ""
+echo "Patching toolsets.py..."
+python3 "$SCRIPT_DIR/patches/patch_toolsets.py" "$AGENT_DIR"
+
+echo "Patching gateway/run.py..."
+python3 "$SCRIPT_DIR/patches/patch_run.py" "$AGENT_DIR"
 
 # Check websockets dependency
 echo ""

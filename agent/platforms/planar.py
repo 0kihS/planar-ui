@@ -7,10 +7,19 @@ agent UI panel. Messages are JSON frames over WebSocket.
 Client -> Server:
     {"type": "message", "text": "hello world"}
     {"type": "command", "cmd": "new"}
+    {"type": "clarify_response", "answer": "Option A"}
+    {"type": "query", "what": "status"}
 
 Server -> Client:
     {"type": "response", "text": "...", "session_id": "..."}
-    {"type": "progress", "tool": "terminal", "preview": "ls -la"}
+    {"type": "progress", "tool": "terminal", "preview": "ls -la",
+     "status": "running", "iteration": 3, "total_tools": 5}
+    {"type": "status", "model": "...", "provider": "...", "session_id": "...",
+     "context_length": 128000, "tokens_prompt": 0, "tokens_completion": 0,
+     "api_calls": 0, "compression_count": 0}
+    {"type": "todo", "items": [...]}
+    {"type": "clarify", "question": "...", "choices": [...], "timeout": 120}
+    {"type": "reasoning", "text": "..."}
     {"type": "system", "text": "Connected to Hermes gateway"}
     {"type": "error", "text": "..."}
 """
@@ -21,7 +30,7 @@ import logging
 import os
 import re
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     import websockets
@@ -64,6 +73,22 @@ class PlanarAdapter(BasePlatformAdapter):
         self._server = None
         self._clients: Dict[Any, str] = {}  # ws -> connection_id
         self._msg_counter = 0
+        # Agent state tracking for status frames
+        self._agent_status: Dict[str, Any] = {
+            "model": "",
+            "provider": "",
+            "session_id": "",
+            "context_length": 0,
+            "tokens_prompt": 0,
+            "tokens_completion": 0,
+            "api_calls": 0,
+            "compression_count": 0,
+        }
+        # Iteration counter for structured progress
+        self._current_iteration = 0
+        self._total_tools_this_turn = 0
+        # Pending clarify response queue (per connection)
+        self._clarify_queues: Dict[str, asyncio.Queue] = {}
 
     async def connect(self) -> bool:
         if not WEBSOCKETS_AVAILABLE:
@@ -88,16 +113,30 @@ class PlanarAdapter(BasePlatformAdapter):
             await self._server.wait_closed()
             self._server = None
         self._clients.clear()
+        self._clarify_queues.clear()
 
     def _parse_progress_text(self, text: str) -> dict:
-        """Parse progress text like '💻 terminal: \"ls -la\"' into a progress frame."""
-        # Try last line for accumulated progress
+        """Parse progress text like '💻 terminal: \"ls -la\"' into a structured progress frame."""
         lines = text.strip().split("\n")
         last = lines[-1] if lines else text
         m = _PROGRESS_RE.match(last)
         if m:
-            return {"type": "progress", "tool": m.group(1), "preview": m.group(2) or ""}
-        return {"type": "progress", "tool": "", "preview": last}
+            return {
+                "type": "progress",
+                "tool": m.group(1),
+                "preview": m.group(2) or "",
+                "status": "running",
+                "iteration": self._current_iteration,
+                "total_tools": self._total_tools_this_turn,
+            }
+        return {
+            "type": "progress",
+            "tool": "",
+            "preview": last,
+            "status": "running",
+            "iteration": self._current_iteration,
+            "total_tools": self._total_tools_this_turn,
+        }
 
     async def send(
         self,
@@ -112,6 +151,7 @@ class PlanarAdapter(BasePlatformAdapter):
             frame = {"type": "response", "text": content}
             if metadata and metadata.get("session_id"):
                 frame["session_id"] = metadata["session_id"]
+                self._agent_status["session_id"] = metadata["session_id"]
         self._msg_counter += 1
         msg_id = f"planar-{self._msg_counter}"
         await self._broadcast(chat_id, frame)
@@ -135,6 +175,76 @@ class PlanarAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict:
         return {"name": "Planar UI", "type": "dm"}
 
+    # -----------------------------------------------------------------
+    # Structured frame senders for the Planar UI protocol
+    # -----------------------------------------------------------------
+
+    async def send_status(self, chat_id: str = "planar-ui") -> None:
+        """Push current agent status to all connected Planar UI clients."""
+        frame = {"type": "status", **self._agent_status}
+        await self._broadcast(chat_id, frame)
+
+    async def send_todo(self, items: List[Dict[str, str]], chat_id: str = "planar-ui") -> None:
+        """Push todo/task list state to Planar UI clients."""
+        frame = {"type": "todo", "items": items}
+        await self._broadcast(chat_id, frame)
+
+    async def send_clarify(
+        self, question: str, choices: List[str], timeout: int = 120,
+        chat_id: str = "planar-ui",
+    ) -> None:
+        """Push a clarify question to the Planar UI for the user to answer."""
+        frame = {
+            "type": "clarify",
+            "question": question,
+            "choices": choices,
+            "timeout": timeout,
+        }
+        await self._broadcast(chat_id, frame)
+
+    async def send_reasoning(self, text: str, chat_id: str = "planar-ui") -> None:
+        """Push reasoning/thinking text to the Planar UI."""
+        frame = {"type": "reasoning", "text": text}
+        await self._broadcast(chat_id, frame)
+
+    def update_status(self, **kwargs) -> None:
+        """Update tracked agent status fields (called from gateway runner)."""
+        for k, v in kwargs.items():
+            if k in self._agent_status:
+                self._agent_status[k] = v
+
+    def set_iteration(self, iteration: int, total_tools: int = 0) -> None:
+        """Update the current iteration counter for structured progress."""
+        self._current_iteration = iteration
+        self._total_tools_this_turn = total_tools
+
+    async def wait_for_clarify_response(self, timeout: int = 120) -> str:
+        """Wait for a clarify response from any connected UI client."""
+        import asyncio
+        tasks = {}
+        for conn_id, q in list(self._clarify_queues.items()):
+            logger.info("[%s] wait_for_clarify: watching queue for %s (qsize=%d)",
+                        self.name, conn_id, q.qsize())
+            tasks[conn_id] = asyncio.create_task(q.get())
+        if not tasks:
+            logger.warning("[%s] wait_for_clarify: NO queues to watch!", self.name)
+            return "No UI client connected"
+        try:
+            done, pending = await asyncio.wait(
+                tasks.values(), timeout=timeout, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            if done:
+                return done.pop().result()
+            return "No response (timed out)"
+        except Exception as e:
+            for t in tasks.values():
+                t.cancel()
+            return f"Error: {e}"
+
+    # -----------------------------------------------------------------
+
     async def _broadcast(self, chat_id: str, frame: dict) -> SendResult:
         data = json.dumps(frame)
         closed = []
@@ -151,14 +261,13 @@ class PlanarAdapter(BasePlatformAdapter):
     async def _handle_client(self, ws):
         conn_id = f"planar-{uuid.uuid4().hex[:8]}"
         self._clients[ws] = conn_id
+        self._clarify_queues[conn_id] = asyncio.Queue()
+        dispatch_queue = asyncio.Queue()
         logger.info("[%s] Client connected: %s", self.name, conn_id)
 
-        try:
-            await ws.send(json.dumps({
-                "type": "system",
-                "text": "Connected to Hermes gateway",
-            }))
-
+        async def _ws_reader():
+            """Read WebSocket messages, route clarify responses immediately,
+            queue everything else for sequential dispatch."""
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
@@ -166,21 +275,65 @@ class PlanarAdapter(BasePlatformAdapter):
                     await ws.send(json.dumps({"type": "error", "text": "Invalid JSON"}))
                     continue
 
-                msg_type = msg.get("type", "")
-
-                if msg_type == "message":
-                    text = msg.get("text", "").strip()
-                    if not text:
-                        continue
-                    await self._dispatch(text, conn_id, ws)
-
-                elif msg_type == "command":
-                    cmd = msg.get("cmd", "").strip()
-                    if cmd:
-                        await self._dispatch(f"/{cmd}", conn_id, ws)
-
+                if msg.get("type") == "clarify_response":
+                    answer = msg.get("answer", "")
+                    q = self._clarify_queues.get(conn_id)
+                    logger.info("[%s] clarify_response from %s: answer=%r queue=%s",
+                                self.name, conn_id, answer, "yes" if q else "NO")
+                    if q:
+                        await q.put(answer)
                 else:
-                    await ws.send(json.dumps({"type": "error", "text": f"Unknown type: {msg_type}"}))
+                    await dispatch_queue.put(msg)
+
+        try:
+            await ws.send(json.dumps({
+                "type": "system",
+                "text": "Connected to Hermes gateway",
+            }))
+            await ws.send(json.dumps({"type": "status", **self._agent_status}))
+
+            reader_task = asyncio.create_task(_ws_reader())
+
+            try:
+                while True:
+                    # Wait for the next non-clarify message from the reader
+                    get_task = asyncio.create_task(dispatch_queue.get())
+                    done, _ = await asyncio.wait(
+                        [reader_task, get_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if reader_task in done:
+                        get_task.cancel()
+                        break  # WebSocket closed
+                    msg = get_task.result()
+                    msg_type = msg.get("type", "")
+
+                    if msg_type == "message":
+                        text = msg.get("text", "").strip()
+                        if not text:
+                            continue
+                        await self._dispatch(text, conn_id, ws)
+
+                    elif msg_type == "command":
+                        cmd = msg.get("cmd", "").strip()
+                        if cmd:
+                            await self._dispatch(f"/{cmd}", conn_id, ws)
+
+                    elif msg_type == "query":
+                        what = msg.get("what", "")
+                        if what == "status":
+                            await ws.send(json.dumps({"type": "status", **self._agent_status}))
+                        else:
+                            await ws.send(json.dumps({"type": "error", "text": f"Unknown query: {what}"}))
+
+                    else:
+                        await ws.send(json.dumps({"type": "error", "text": f"Unknown type: {msg_type}"}))
+            finally:
+                reader_task.cancel()
+                try:
+                    await reader_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         except websockets.exceptions.ConnectionClosed:
             pass
@@ -188,6 +341,7 @@ class PlanarAdapter(BasePlatformAdapter):
             logger.error("[%s] Client error: %s", self.name, e)
         finally:
             self._clients.pop(ws, None)
+            self._clarify_queues.pop(conn_id, None)
             logger.info("[%s] Client disconnected: %s", self.name, conn_id)
 
     async def _dispatch(self, text: str, conn_id: str, ws):

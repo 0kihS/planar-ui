@@ -35,6 +35,21 @@ static void planar_app_init(PlanarApp *app) {
     app->notification_panel = NULL;
     app->cmd_socket_fd = -1;
     app->cmd_socket_source = 0;
+    app->agent_model = NULL;
+    app->agent_provider = NULL;
+    app->session_id = NULL;
+    app->context_length = 0;
+    app->tokens_prompt = 0;
+    app->tokens_completion = 0;
+    app->api_calls = 0;
+    app->compression_count = 0;
+    app->current_iteration = 0;
+    app->iteration_tool_count = 0;
+    app->todo_json = NULL;
+    app->clarify_question = NULL;
+    app->clarify_choices_json = NULL;
+    app->clarify_timeout = 0;
+    app->clarify_active = FALSE;
 }
 
 static void planar_app_class_init(PlanarAppClass *class) {
@@ -51,6 +66,11 @@ static void agent_message_callback(const char *role, const char *message, gpoint
     planar_app_on_agent_message(app, role, message);
 }
 
+static void agent_structured_callback(const char *type, JsonObject *data, gpointer user_data) {
+    PlanarApp *app = PLANAR_APP(user_data);
+    planar_app_on_agent_structured(app, type, data);
+}
+
 static void planar_app_activate(GApplication *application) {
     PlanarApp *app = PLANAR_APP(application);
     
@@ -62,7 +82,7 @@ static void planar_app_activate(GApplication *application) {
     
     app->agent = agent_ipc_new();
     if (app->agent) {
-        agent_ipc_connect(app->agent, agent_message_callback, app);
+        agent_ipc_connect(app->agent, agent_message_callback, agent_structured_callback, app);
     }
     
     app->topbar_panel = panel_topbar_new(app);
@@ -136,6 +156,106 @@ void planar_app_send_to_agent(PlanarApp *app, const char *message) {
     if (app->agent) {
         agent_ipc_send(app->agent, message);
     }
+}
+
+void planar_app_on_agent_structured(PlanarApp *app, const char *type, JsonObject *data) {
+    if (strcmp(type, "status") == 0) {
+        /* Update agent session state */
+        if (json_object_has_member(data, "model")) {
+            g_free(app->agent_model);
+            app->agent_model = g_strdup(json_object_get_string_member(data, "model"));
+        }
+        if (json_object_has_member(data, "provider")) {
+            g_free(app->agent_provider);
+            app->agent_provider = g_strdup(json_object_get_string_member(data, "provider"));
+        }
+        if (json_object_has_member(data, "session_id")) {
+            g_free(app->session_id);
+            app->session_id = g_strdup(json_object_get_string_member(data, "session_id"));
+        }
+        if (json_object_has_member(data, "context_length"))
+            app->context_length = json_object_get_int_member(data, "context_length");
+        if (json_object_has_member(data, "tokens_prompt"))
+            app->tokens_prompt = json_object_get_int_member(data, "tokens_prompt");
+        if (json_object_has_member(data, "tokens_completion"))
+            app->tokens_completion = json_object_get_int_member(data, "tokens_completion");
+        if (json_object_has_member(data, "api_calls"))
+            app->api_calls = (gint)json_object_get_int_member(data, "api_calls");
+        if (json_object_has_member(data, "compression_count"))
+            app->compression_count = (gint)json_object_get_int_member(data, "compression_count");
+
+        /* Refresh panels that show agent state */
+        if (app->topbar_panel) panel_topbar_refresh(app->topbar_panel);
+        if (app->status_panel) panel_status_refresh(app->status_panel);
+
+    } else if (strcmp(type, "progress") == 0) {
+        /* Update iteration counter from structured progress */
+        if (json_object_has_member(data, "iteration"))
+            app->current_iteration = (gint)json_object_get_int_member(data, "iteration");
+        if (json_object_has_member(data, "total_tools"))
+            app->iteration_tool_count = (gint)json_object_get_int_member(data, "total_tools");
+        if (app->log_panel)
+            panel_log_set_iteration(app->log_panel, app->current_iteration, app->iteration_tool_count);
+
+    } else if (strcmp(type, "todo") == 0) {
+        /* Store todo items as raw JSON for panel injection */
+        if (json_object_has_member(data, "items")) {
+            JsonNode *items_node = json_object_get_member(data, "items");
+            JsonGenerator *gen = json_generator_new();
+            json_generator_set_root(gen, items_node);
+            g_free(app->todo_json);
+            app->todo_json = json_generator_to_data(gen, NULL);
+            g_object_unref(gen);
+        }
+        /* Refresh status panel which may show todo */
+        if (app->status_panel) panel_status_refresh(app->status_panel);
+
+    } else if (strcmp(type, "clarify") == 0) {
+        /* Store clarify question state */
+        g_free(app->clarify_question);
+        app->clarify_question = NULL;
+        g_free(app->clarify_choices_json);
+        app->clarify_choices_json = NULL;
+
+        if (json_object_has_member(data, "question"))
+            app->clarify_question = g_strdup(json_object_get_string_member(data, "question"));
+        if (json_object_has_member(data, "choices")) {
+            JsonNode *choices_node = json_object_get_member(data, "choices");
+            JsonGenerator *gen = json_generator_new();
+            json_generator_set_root(gen, choices_node);
+            app->clarify_choices_json = json_generator_to_data(gen, NULL);
+            g_object_unref(gen);
+        }
+        if (json_object_has_member(data, "timeout"))
+            app->clarify_timeout = (gint)json_object_get_int_member(data, "timeout");
+        app->clarify_active = TRUE;
+
+        /* Render clarify card in chat panel */
+        if (app->chat_panel) {
+            panel_chat_show_clarify(app->chat_panel,
+                                    app->clarify_question,
+                                    app->clarify_choices_json);
+        }
+
+    } else if (strcmp(type, "reasoning") == 0) {
+        /* Show reasoning in chat panel */
+        if (json_object_has_member(data, "text")) {
+            const char *text = json_object_get_string_member(data, "text");
+            if (text && app->chat_panel) {
+                panel_chat_add_message(app->chat_panel, "reasoning", text);
+            }
+        }
+    }
+}
+
+void planar_app_send_clarify_response(PlanarApp *app, const char *answer) {
+    if (!app->agent || !app->clarify_active) return;
+    agent_ipc_send_json(app->agent, "clarify_response", "answer", answer);
+    app->clarify_active = FALSE;
+    g_free(app->clarify_question);
+    app->clarify_question = NULL;
+    g_free(app->clarify_choices_json);
+    app->clarify_choices_json = NULL;
 }
 
 /* ── Command Socket ───────────────────────────────────────────────────────── */

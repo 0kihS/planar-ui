@@ -15,14 +15,21 @@ static void panel_log_init(PanelLog *p) {
 
 static const char *LOG_EXTRA_CSS =
     ".log-section-label { font-family: var(--display); font-size: 7px; color: var(--teal-dim); "
-    "  letter-spacing: 0.18em; padding: 6px 8px 2px; text-transform: uppercase; }";
+    "  letter-spacing: 0.18em; padding: 6px 8px 2px; text-transform: uppercase; }"
+    ".step-tag { font-size: 7px; color: var(--amber); font-family: var(--display); "
+    "  letter-spacing: 0.08em; margin-right: 4px; }";
 
 /* JS that lives in the page: sparkline engine + counters */
 static const char *LOG_JS =
     "<script>"
     "var sparkData = new Array(60).fill(0);"
     "var eventCount = 0, toolCount = 0;"
+    "var currentIteration = 0, totalTools = 0;"
     "var startTime = Date.now();"
+
+    "function setIteration(iter, total) {"
+    "  currentIteration = iter; totalTools = total;"
+    "}"
 
     "setInterval(function() {"
     "  sparkData.push(0); sparkData.shift();"
@@ -71,9 +78,12 @@ static const char *LOG_JS =
     "  toolCount++; bumpSpark();"
     "  var c = document.getElementById('log-content');"
     "  if (!c) return;"
+    "  var stepTag = currentIteration > 0"
+    "    ? '<span class=\"step-tag\">STEP ' + currentIteration + (totalTools > 0 ? '/' + totalTools : '') + '</span> '"
+    "    : '';"
     "  c.innerHTML += '<div class=\"log-item tool-entry\">"
     "    <div class=\"log-time\">' + time + '</div>"
-    "    <div class=\"log-event tool-name\">' + name + '</div>"
+    "    <div class=\"log-event tool-name\">' + stepTag + name + '</div>"
     "    <div class=\"log-detail\">' + preview + '</div></div>';"
     "  c.scrollTop = c.scrollHeight;"
     "}"
@@ -133,6 +143,16 @@ void panel_log_add_tool(GtkWidget *widget, const char *tool_info) {
 
     g_free(script);
     g_free(escaped);
+}
+
+void panel_log_set_iteration(GtkWidget *widget, int iteration, int total_tools) {
+    PanelLog *p = APP_PANEL_LOG(widget);
+    if (!p->webview) return;
+
+    char *script = g_strdup_printf("setIteration(%d,%d);", iteration, total_tools);
+    webkit_web_view_evaluate_javascript(WEBKIT_WEB_VIEW(p->webview),
+        script, -1, NULL, NULL, NULL, NULL, NULL);
+    g_free(script);
 }
 
 GtkWidget *panel_log_new(PlanarApp *app) {

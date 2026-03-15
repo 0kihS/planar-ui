@@ -21,5 +21,6 @@ GType panel_log_get_type(void);
 GtkWidget *panel_log_new(PlanarApp *app);
 void panel_log_add_event(GtkWidget *widget, const char *event, const char *detail);
 void panel_log_add_tool(GtkWidget *widget, const char *tool_info);
+void panel_log_set_iteration(GtkWidget *widget, int iteration, int total_tools);
 
 #endif
