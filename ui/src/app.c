@@ -331,6 +331,18 @@ static gboolean cmd_client_callback(GIOChannel *source, GIOCondition condition, 
         } else if (strcmp(buf, "hide_windows") == 0) {
             if (app->windows_panel) gtk_widget_set_visible(app->windows_panel, FALSE);
             write(fd, "{\"ok\":true}\n", 12);
+        } else if (strcmp(buf, "toggle_status") == 0) {
+            if (app->status_panel) {
+                gboolean vis = gtk_widget_get_visible(app->status_panel);
+                gtk_widget_set_visible(app->status_panel, !vis);
+            }
+            write(fd, "{\"ok\":true}\n", 12);
+        } else if (strcmp(buf, "show_status") == 0) {
+            if (app->status_panel) gtk_widget_set_visible(app->status_panel, TRUE);
+            write(fd, "{\"ok\":true}\n", 12);
+        } else if (strcmp(buf, "hide_status") == 0) {
+            if (app->status_panel) gtk_widget_set_visible(app->status_panel, FALSE);
+            write(fd, "{\"ok\":true}\n", 12);
         } else {
             write(fd, "{\"ok\":false,\"error\":\"unknown command\"}\n", 39);
         }

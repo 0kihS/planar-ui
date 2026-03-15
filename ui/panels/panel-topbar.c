@@ -37,6 +37,9 @@ static gboolean on_topbar_decide_policy(GtkWidget *webview,
     } else if (strstr(uri, "toggle_logs") && p->app->log_panel) {
         gboolean vis = gtk_widget_get_visible(p->app->log_panel);
         gtk_widget_set_visible(p->app->log_panel, !vis);
+    } else if (strstr(uri, "toggle_status") && p->app->status_panel) {
+        gboolean vis = gtk_widget_get_visible(p->app->status_panel);
+        gtk_widget_set_visible(p->app->status_panel, !vis);
     }
 
     webkit_policy_decision_ignore(decision);
@@ -90,6 +93,7 @@ void panel_topbar_refresh(GtkWidget *widget) {
     gboolean win_vis = p->app->windows_panel && gtk_widget_get_visible(p->app->windows_panel);
     gboolean chat_vis = p->app->chat_panel && gtk_widget_get_visible(p->app->chat_panel);
     gboolean log_vis = p->app->log_panel && gtk_widget_get_visible(p->app->log_panel);
+    gboolean status_vis = p->app->status_panel && gtk_widget_get_visible(p->app->status_panel);
 
     /* Model name (strip provider/ prefix) */
     const char *model_display = "";
@@ -145,6 +149,7 @@ void panel_topbar_refresh(GtkWidget *widget) {
         "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_windows'\">WIN</button>"
         "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_chat'\">CHAT</button>"
         "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_logs'\">LOG</button>"
+        "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_status'\">SYS</button>"
         "  <div class='topbar-sep'></div>"
         "  <span class='topbar-sub'>IPC <span class='val'>%s</span></span>"
         "  <div class='topbar-sep'></div>"
@@ -161,6 +166,7 @@ void panel_topbar_refresh(GtkWidget *widget) {
         win_vis ? "active" : "inactive",
         chat_vis ? "active" : "inactive",
         log_vis ? "active" : "inactive",
+        status_vis ? "active" : "inactive",
         comp_online ? "BOUND" : "NONE",
         agent_online ? "LINK" : "DOWN");
 
