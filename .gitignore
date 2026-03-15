@@ -43,7 +43,6 @@ __pycache__/
 *.pyc
 
 # Misc
-*.mp4
 
 # Claude Code
 CLAUDE.md
