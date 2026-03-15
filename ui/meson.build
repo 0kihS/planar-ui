@@ -14,6 +14,7 @@ sources = files(
     'src/main.c',
     'src/app.c',
     'ipc/compositor-ipc.c',
+    'ipc/compositor_backend.c',
     'ipc/agent-ipc.c',
     'panels/panel.c',
     'panels/panel-windows.c',

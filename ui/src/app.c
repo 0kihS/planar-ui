@@ -30,6 +30,8 @@ PlanarApp *planar_app_new(void) {
 
 static void planar_app_init(PlanarApp *app) {
     app->compositor = NULL;
+    app->compositor_backend = NULL;
+    app->has_windows_panel = TRUE;
     app->agent = NULL;
     app->connected = FALSE;
     app->notification_panel = NULL;
@@ -56,7 +58,7 @@ static void planar_app_class_init(PlanarAppClass *class) {
     G_APPLICATION_CLASS(class)->activate = planar_app_activate;
 }
 
-static void compositor_event_callback(const char *event, const char *data, gpointer user_data) {
+static void backend_event_callback(const char *event, const char *data, gpointer user_data) {
     PlanarApp *app = PLANAR_APP(user_data);
     planar_app_on_compositor_event(app, event, data);
 }
@@ -76,7 +78,7 @@ static void planar_app_activate(GApplication *application) {
     
     app->compositor = compositor_ipc_new();
     if (app->compositor) {
-        compositor_ipc_connect(app->compositor, compositor_event_callback, app);
+        compositor_ipc_connect(app->compositor, backend_event_callback, app);
         app->connected = TRUE;
     }
     
@@ -85,6 +87,11 @@ static void planar_app_activate(GApplication *application) {
         agent_ipc_connect(app->agent, agent_message_callback, agent_structured_callback, app);
     }
     
+    /* Create compositor backend abstraction — pass existing IPC to avoid duplicate connection */
+    app->compositor_backend = compositor_backend_create(backend_event_callback, app, app->compositor);
+    if (app->compositor_backend)
+        app->has_windows_panel = compositor_backend_has_windows_panel(app->compositor_backend);
+
     app->topbar_panel = panel_topbar_new(app);
     app->windows_panel = panel_windows_new(app);
     app->chat_panel = panel_chat_new(app);
@@ -106,6 +113,9 @@ static void planar_app_activate(GApplication *application) {
 }
 
 void planar_app_free(PlanarApp *app) {
+    if (app->compositor_backend) {
+        compositor_backend_free(app->compositor_backend);
+    }
     if (app->compositor) {
         compositor_ipc_free(app->compositor);
     }

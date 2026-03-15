@@ -3,6 +3,7 @@
 
 #include <gtk/gtk.h>
 #include "ipc/compositor-ipc.h"
+#include "ipc/compositor_backend.h"
 #include "ipc/agent-ipc.h"
 
 G_BEGIN_DECLS
@@ -16,6 +17,7 @@ typedef struct _PlanarAppClass PlanarAppClass;
 struct _PlanarApp {
     GtkApplication gtk_app;
     struct compositor_ipc *compositor;
+    compositor_backend_t *compositor_backend;
     struct agent_ipc *agent;
 
     GtkWidget *windows_panel;
@@ -27,6 +29,7 @@ struct _PlanarApp {
     GtkWidget *notification_panel;
 
     gboolean connected;
+    gboolean has_windows_panel;
     int cmd_socket_fd;
     guint cmd_socket_source;
 

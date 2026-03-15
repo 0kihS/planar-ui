@@ -125,7 +125,29 @@ void panel_topbar_refresh(GtkWidget *widget) {
     }
     ctx_bar[pos] = '\0';
 
-    char *html = g_strdup_printf(
+    /* Build toggle buttons — WIN only on planar */
+    char buttons_buf[512];
+    if (p->app->has_windows_panel) {
+        snprintf(buttons_buf, sizeof(buttons_buf),
+            "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_windows'\">WIN</button>"
+            "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_chat'\">CHAT</button>"
+            "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_logs'\">LOG</button>"
+            "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_status'\">SYS</button>",
+            win_vis ? "active" : "inactive",
+            chat_vis ? "active" : "inactive",
+            log_vis ? "active" : "inactive",
+            status_vis ? "active" : "inactive");
+    } else {
+        snprintf(buttons_buf, sizeof(buttons_buf),
+            "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_chat'\">CHAT</button>"
+            "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_logs'\">LOG</button>"
+            "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_status'\">SYS</button>",
+            chat_vis ? "active" : "inactive",
+            log_vis ? "active" : "inactive",
+            status_vis ? "active" : "inactive");
+    }
+
+char *html = g_strdup_printf(
         "<html><head><style>%s body{background:transparent;}"
         ".ctx-bar{font-family:var(--mono);font-size:8px;color:var(--teal);letter-spacing:0.05em;}"
         ".model-tag{font-family:var(--display);font-size:7px;color:var(--amber);letter-spacing:0.08em;}"
@@ -146,10 +168,7 @@ void panel_topbar_refresh(GtkWidget *widget) {
         "  <span class='model-tag'>%s</span>"
         "  <span class='ctx-bar'>[%s] %d%%</span>"
         "  <div style='flex:1;'></div>"
-        "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_windows'\">WIN</button>"
-        "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_chat'\">CHAT</button>"
-        "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_logs'\">LOG</button>"
-        "  <button class='toggle-btn %s' onclick=\"window.location.href='planar://toggle_status'\">SYS</button>"
+        "%s"
         "  <div class='topbar-sep'></div>"
         "  <span class='topbar-sub'>IPC <span class='val'>%s</span></span>"
         "  <div class='topbar-sep'></div>"
@@ -163,10 +182,7 @@ void panel_topbar_refresh(GtkWidget *widget) {
         time_str,
         model_display,
         ctx_bar, ctx_pct,
-        win_vis ? "active" : "inactive",
-        chat_vis ? "active" : "inactive",
-        log_vis ? "active" : "inactive",
-        status_vis ? "active" : "inactive",
+        buttons_buf,
         comp_online ? "BOUND" : "NONE",
         agent_online ? "LINK" : "DOWN");
 
